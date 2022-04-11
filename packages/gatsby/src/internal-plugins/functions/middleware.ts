@@ -5,7 +5,19 @@ import type { RequestHandler, Request, Response, NextFunction } from "express"
 import reporter from "gatsby-cli/lib/reporter"
 import multer from "multer"
 
+import {
+  createConfig,
+  IGatsbyFunctionConfigProcessed,
+  IGatsbyBodyParserConfigProcessed,
+} from "./config"
 import type { IGatsbyFunction } from "../../redux/types"
+
+const expressBuiltinMiddleware = {
+  urlencoded,
+  text,
+  json,
+  raw,
+}
 
 interface IGatsbyRequestContext {
   functionObj: IGatsbyFunction
@@ -13,6 +25,7 @@ interface IGatsbyRequestContext {
   // we massage params early in setContext middleware, but apparently other middlewares
   // reset it, so we will store those on our context and restore later
   params: Request["params"]
+  config: IGatsbyFunctionConfigProcessed
 }
 
 interface IGatsbyRequest extends Request {
@@ -71,6 +84,7 @@ function createSetContextFunctionMiddleware({
     }
 
     if (functionObj) {
+      let userConfig
       if (prepareFn) {
         await prepareFn(functionObj)
       }
@@ -80,6 +94,7 @@ function createSetContextFunctionMiddleware({
       try {
         delete require.cache[require.resolve(pathToFunction)]
         const fn = require(pathToFunction)
+        userConfig = fn?.config
 
         fnToExecute = (fn && fn.default) || fn
       } catch (e) {
@@ -107,6 +122,7 @@ function createSetContextFunctionMiddleware({
           functionObj,
           fnToExecute,
           params: req.params,
+          config: createConfig(userConfig, functionObj),
         }
       }
     }
@@ -129,6 +145,28 @@ function setCookies(
   req.cookies = cookie.parse(cookies)
 
   return next()
+}
+
+function bodyParserMiddlewareWithConfig(
+  type: keyof IGatsbyBodyParserConfigProcessed
+): IGatsbyMiddleware {
+  return function (
+    req: IGatsbyRequest,
+    res: Response,
+    next: NextFunction
+  ): void {
+    if (req.context && req.context.config.bodyParser) {
+      const bodyParserConfig = req.context.config.bodyParser[type]
+      // console.log(`middleware config`, {
+      //   type,
+      //   bodyParserConfig,
+      //   path: req.path,
+      // })
+      expressBuiltinMiddleware[type](bodyParserConfig)(req, res, next)
+    } else {
+      next()
+    }
+  }
 }
 
 async function executeFunction(
@@ -184,10 +222,10 @@ export function functionMiddlewares(
     setCookies,
     setContext,
     multer().any(),
-    urlencoded({ extended: true }),
-    text(),
-    json(),
-    raw(),
+    bodyParserMiddlewareWithConfig(`text`),
+    bodyParserMiddlewareWithConfig(`urlencoded`),
+    bodyParserMiddlewareWithConfig(`json`),
+    bodyParserMiddlewareWithConfig(`raw`),
     executeFunction,
   ]
 }
